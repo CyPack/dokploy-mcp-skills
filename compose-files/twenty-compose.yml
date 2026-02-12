@@ -1,0 +1,102 @@
+# Twenty CRM Docker Compose for Dokploy
+# Port: 13001
+# First run: Create account via web UI
+# Minimum RAM: 2GB
+# Docs: https://twenty.com/developers/section/self-hosting
+
+services:
+  server:
+    image: twentycrm/twenty:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Server URL - Change to your actual URL if not localhost
+      - SERVER_URL=http://localhost:13001
+
+      # Security tokens - CHANGE THESE IN PRODUCTION!
+      - APP_SECRET=CHANGE_THIS_APP_SECRET
+      - ACCESS_TOKEN_SECRET=CHANGE_THIS_ACCESS_TOKEN_SECRET
+      - LOGIN_TOKEN_SECRET=CHANGE_THIS_LOGIN_TOKEN_SECRET
+      - REFRESH_TOKEN_SECRET=CHANGE_THIS_REFRESH_TOKEN_SECRET
+      - FILE_TOKEN_SECRET=CHANGE_THIS_FILE_TOKEN_SECRET
+
+      # Database
+      - PG_DATABASE_URL=postgres://postgres:CHANGE_ME_SECURE_PASSWORD@db:5432/twenty
+
+      # Redis
+      - REDIS_URL=redis://redis:6379
+
+      # Storage
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=.local-storage
+    ports:
+      - "13001:3000"
+    volumes:
+      - twenty_server_data:/app/.local-storage
+      - twenty_docker_data:/app/docker-data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  worker:
+    image: twentycrm/twenty:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["yarn", "worker:prod"]
+    environment:
+      - SERVER_URL=http://localhost:13001
+      - APP_SECRET=CHANGE_THIS_APP_SECRET
+      - ACCESS_TOKEN_SECRET=CHANGE_THIS_ACCESS_TOKEN_SECRET
+      - LOGIN_TOKEN_SECRET=CHANGE_THIS_LOGIN_TOKEN_SECRET
+      - REFRESH_TOKEN_SECRET=CHANGE_THIS_REFRESH_TOKEN_SECRET
+      - FILE_TOKEN_SECRET=CHANGE_THIS_FILE_TOKEN_SECRET
+      - PG_DATABASE_URL=postgres://postgres:CHANGE_ME_SECURE_PASSWORD@db:5432/twenty
+      - REDIS_URL=redis://redis:6379
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=.local-storage
+    volumes:
+      - twenty_server_data:/app/.local-storage
+      - twenty_docker_data:/app/docker-data
+
+  db:
+    image: twentycrm/twenty-postgres:latest
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=CHANGE_ME_SECURE_PASSWORD
+      - POSTGRES_DB=twenty
+    volumes:
+      - twenty_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d twenty"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - twenty_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  twenty_db_data:
+  twenty_server_data:
+  twenty_docker_data:
+  twenty_redis_data:

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "DokployServer": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "dokploy-mcp", "--enable-tools", "compose/"],
+      "env": {
+        "DOKPLOY_URL": "<DOKPLOY_URL>",
+        "DOKPLOY_API_KEY": "<DOKPLOY_API_KEY>"
+      }
+    }
+  }
+}

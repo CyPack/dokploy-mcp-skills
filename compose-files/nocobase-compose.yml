@@ -1,0 +1,60 @@
+# NocoBase Docker Compose for Dokploy
+# Port: 13000
+# First run: Create admin account via web UI
+# Docs: https://docs.nocobase.com
+
+services:
+  app:
+    image: nocobase/nocobase:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Security - CHANGE THESE IN PRODUCTION!
+      - APP_KEY=CHANGE_THIS_SECRET_KEY
+      - ENCRYPTION_FIELD_KEY=CHANGE_THIS_ENCRYPTION_KEY
+
+      # Database
+      - DB_DIALECT=postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_DATABASE=nocobase
+      - DB_USER=nocobase
+      - DB_PASSWORD=CHANGE_ME_SECURE_PASSWORD
+
+      # Timezone
+      - TZ=Europe/Amsterdam
+
+      # Production mode
+      - APP_ENV=production
+    volumes:
+      - nocobase_storage:/app/nocobase/storage
+    ports:
+      - "13000:80"
+    init: true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nocobase
+      POSTGRES_DB: nocobase
+      POSTGRES_PASSWORD: CHANGE_ME_SECURE_PASSWORD
+    volumes:
+      - nocobase_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nocobase -d nocobase"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  nocobase_storage:
+  nocobase_db:
