@@ -1,0 +1,14 @@
+{
+  "name": "dokploy-automation",
+  "version": "1.0.0",
+  "description": "Browser automation for Dokploy deployments",
+  "scripts": {
+    "deploy:nocobase": "node deploy-nocobase.js",
+    "deploy:twenty": "node deploy-twenty.js",
+    "deploy:all": "node deploy-nocobase.js && node deploy-twenty.js",
+    "install:playwright": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}

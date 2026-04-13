@@ -378,7 +378,7 @@ bash ~/.claude/skills/dokploy-manage/scripts/monitor-all.sh
 
 **State tracking:** `/tmp/dokploy-monitor-state.json` — önceki durum saklanır
 **Geçiş algılama:** `running→error` veya `done→error` → WA bildirimi gönder
-**WA channel:** Evolution API (localhost:8085), instance: `t4f`, numara: `<YOUR_WA_NUMBER>`
+**WA channel:** Evolution API (localhost:8085), instance: `t4f`, numara: `31633196146`
 
 ---
 
@@ -393,6 +393,7 @@ bash ~/.claude/skills/dokploy-manage/scripts/monitor-all.sh
 | Container log debug | docker logs CONTAINER --tail=100 → "Error:" satırları → nedeni anla | Container name biliniyor | 2026-02-22 |
 | compose tool enable | `~/.claude.json` args'a `"--enable-tools", "compose/"` ekle → restart | Config değişikliği | 2026-02-12 |
 | Hafif compose kontrol | REST API + jq: `curl .../compose.one?composeId=X \| jq '{name,composeStatus}'` | API key | 2026-02-12 |
+| Supabase migration (docker exec) | `docker exec -i supabase-...-db psql -U postgres -d postgres < migration.sql` | DB container Up, port 5432 host'a expose DEĞİL (docker exec zorunlu) | 2026-04-13 |
 | Manuel docker-compose deploy | docker-compose.yml yaz → docker compose up -d → docker ps → curl test | Docker kurulu | 2026-02-22 |
 | Chatwoot deploy | image=chatwoot/chatwoot:latest, REDIS_URL, SECRET_KEY_BASE, db:chatwoot_prepare | Docker, 4GB RAM | 2026-02-22 |
 | Dokploy Swarm Full Restore | 1) firewalld stale binding fix → docker_gwbridge create 2) Temp PG container → ALTER USER password → docker secret create 3) docker network create overlay dokploy-network 4) docker service create dokploy-postgres (secret mount, volume) 5) docker service create dokploy-redis (volume) 6) docker service create dokploy (bind mounts: docker.sock + /etc/dokploy, secret, port 3000, env ADVERTISE_ADDR + POSTGRES_PASSWORD_FILE) 7) curl localhost:3000 → hasAdmin:true 8) MCP project-all verify | Docker Swarm active, volumes intact, /etc/dokploy intact | 2026-03-03 |
@@ -401,6 +402,8 @@ bash ~/.claude/skills/dokploy-manage/scripts/monitor-all.sh
 | Lokal registry | docker run -d -p 5000:5000 registry:2 → tag+push → compose'da localhost:5000/img kullan | Dokploy --pull always için | 2026-02-22 |
 | GHCR image deploy (pre-built) | GHCR Image Compose Path (aşağı bak) | container_name KULLANMA, sourceType=raw ZORUNLU, extra_hosts | 2026-03-25 |
 | App + DB compose (production) | Production Compose Checklist (aşağı bak) | Auth, TZ, log rotation, healthcheck, depends_on | 2026-03-25 |
+| Vite/React SPA + Supabase backend | Vite + Supabase Path (aşağı bak) | Build-time ARG, local registry, migration docker exec, SPA nginx config | 2026-04-13 |
+| Upstream GitHub repo (Dockerfile yok) | Custom Dockerfile + Local Registry | Repo clone → Dockerfile yaz → build → localhost:5000 push → compose image ref | 2026-04-13 |
 
 ---
 
@@ -471,4 +474,141 @@ Bazı uygulamalar deploy sonrası ek kurulum/doğrulama gerektirir. Generic patt
 
 4. Browser localStorage: Dashboard'lu app'lerde config browser'da saklanır
    → Server OK ama UI hata veriyorsa → Playwright ile browser katmanını kontrol et
+```
+
+---
+
+## 16. Vite/React SPA + Supabase Backend Deploy (2026-04-13)
+
+**Senaryo:** GitHub'daki bir Vite/React projesini Dokploy'a deploy et, mevcut Supabase instance'ını backend olarak kullan.
+**Referans uygulama:** [marmelab/atomic-crm](https://github.com/marmelab/atomic-crm) — React Admin CRM, port 3015
+**Detaylı rehber:** `deployments/atomic-crm/golden-path.md`
+
+### Neden Bu Path?
+
+- Repo'da Dockerfile YOK → kendin yazmalısın
+- Vite `VITE_*` env var'larını BUILD TIME'da bake eder → runtime ENV çalışmaz
+- Dokploy `--pull always` → Docker Hub'da image yoksa fail → local registry zorunlu
+- Supabase zaten çalışıyor → yeni instance gereksiz, mevcut DB'ye migration uygula
+
+### Akış (9 Adım)
+
+```
+1. git clone --depth=1 <repo> /tmp/<repo>
+
+2. Dockerfile yaz (multi-stage: node:22-alpine builder → nginx:alpine)
+   ⚠️ ARG VITE_X → ENV VITE_X=$VITE_X → RUN npm run build
+   ⚠️ nginx SPA config: try_files $uri $uri/ /index.html
+
+3. docker build --build-arg VITE_SUPABASE_URL="..." --build-arg VITE_SB_PUBLISHABLE_KEY="..." \
+     -t localhost:5000/<app>:latest /tmp/<repo>
+
+4. docker push localhost:5000/<app>:latest
+
+5. MCP: project-create(name, description) → projectId + environmentId
+
+6. MCP: compose-create(name, appName, projectId, environmentId) → composeId
+   ⚠️ sourceType default "github" → DÜZELTMEK ZORUNLU
+
+7. REST API: POST /api/compose.update
+   Body: {"composeId":"...", "sourceType":"raw", "composeFile":"name: ...\nservices:\n  frontend:\n    image: localhost:5000/<app>:latest\n    ports:\n      - \"PORT:80\"\n"}
+   Header: x-api-key: $DOKPLOY_KEY
+
+8. Migration: docker exec -i supabase-...-db psql -U postgres -d postgres < migration.sql
+   ⚠️ "already exists" hatası → CREATE OR REPLACE FUNCTION + DROP TRIGGER IF EXISTS
+
+9. MCP: compose-deploy(composeId) → 20s bekle → docker ps + curl → HTTP 200
+```
+
+### Vite Build-Time Env Var Pattern (Dockerfile)
+
+```dockerfile
+FROM node:22-alpine AS builder
+WORKDIR /app
+# Dependencies (cached layer — package.json değişmedikçe tekrar çalışmaz)
+COPY package*.json ./
+RUN npm ci
+
+# Build args — npm ci'den SONRA (cache optimization)
+ARG VITE_SUPABASE_URL
+ARG VITE_SB_PUBLISHABLE_KEY
+ARG VITE_IS_DEMO=false
+ARG VITE_ATTACHMENTS_BUCKET=attachments
+ARG VITE_INBOUND_EMAIL
+
+# ARG → ENV dönüşümü — Vite build time'da ENV okur
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+ENV VITE_SB_PUBLISHABLE_KEY=$VITE_SB_PUBLISHABLE_KEY
+ENV VITE_IS_DEMO=$VITE_IS_DEMO
+ENV VITE_ATTACHMENTS_BUCKET=$VITE_ATTACHMENTS_BUCKET
+ENV VITE_INBOUND_EMAIL=$VITE_INBOUND_EMAIL
+
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+# SPA routing — tüm path'leri index.html'e yönlendir
+RUN printf 'server {\n    listen 80;\n    root /usr/share/nginx/html;\n    index index.html;\n    location / {\n        try_files $uri $uri/ /index.html;\n    }\n}\n' > /etc/nginx/conf.d/default.conf
+EXPOSE 80
+```
+
+**Neden ARG → ENV → RUN?**
+- `ARG` tek başına `RUN` komutlarında environment olarak kullanılabilir ama bazı build tool'ları (Vite/Webpack/esbuild) `process.env` üzerinden okur
+- `ENV` ile explicit dönüşüm en güvenli yol — tüm senaryolarda çalışır
+- ARG'ları `npm ci`'den SONRA declare et → dependency install layer'ı cache'lenmeye devam eder
+
+### Supabase Self-Hosted Key Mapping
+
+| Upstream .env (dev) | Self-Hosted Karşılığı | Format Farkı |
+|---------------------|----------------------|--------------|
+| `VITE_SUPABASE_URL=http://127.0.0.1:54321` | Supabase Kong external URL (Traefik domain) | Port değişir, domain olur |
+| `VITE_SB_PUBLISHABLE_KEY=sb_publishable_*` | ANON_KEY (JWT `eyJ...` format) | `sb_publishable_*` = CLI local format, self-hosted = JWT |
+
+### Migration Docker Exec Pattern
+
+```bash
+# Supabase DB host port'a expose DEĞİL (çoklu PG container çakışması)
+# → docker exec ile container'a doğrudan bağlan
+docker exec -i supabase-supabase-0qdhd3-supabase-db psql -U postgres -d postgres < migration.sql
+
+# "already exists" hatası alan migration'lar için:
+# CREATE FUNCTION → CREATE OR REPLACE FUNCTION
+# CREATE TRIGGER → DROP TRIGGER IF EXISTS + CREATE TRIGGER
+# CREATE INDEX → CREATE INDEX IF NOT EXISTS
+```
+
+### Başarı Kriteri
+
+```bash
+docker ps | grep atomic    # → Up, 0.0.0.0:3015->80/tcp
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3015/  # → 200
+# İlk kullanıcı signup → otomatik admin olur
+```
+
+### Browser Erişim Ön Koşulları (Deploy Sonrası ZORUNLU)
+
+Frontend deploy olduktan sonra browser'dan erişim için 3 koşul sağlanmalı:
+
+```
+1. /etc/hosts → Supabase traefik.me domain'i Traefik IP'sine yönlendirilmeli
+   grep supabase /etc/hosts → "192.168.2.13 supabase-..." olmalı (127.0.0.1 DEĞİL!)
+   Fix: sudo sed -i 's/127.0.0.1 supabase-.../192.168.2.13 supabase-.../' /etc/hosts
+
+2. Traefik → Supabase network bağlı olmalı
+   docker network connect supabase-supabase-0qdhd3 dokploy-traefik 2>/dev/null
+   Test: curl -s -w "%{http_code}" http://supabase-...-traefik.me/rest/v1/ → 401 = OK
+
+3. Supabase email autoconfirm AÇIK olmalı (mail container yoksa)
+   docker exec supabase-...-auth env | grep GOTRUE_MAILER_AUTOCONFIRM → true
+   Fix: docker stop/rm auth → ENABLE_EMAIL_AUTOCONFIRM=true docker compose up -d --no-deps auth
+```
+
+**Hızlı doğrulama scripti:**
+```bash
+# Deploy sonrası tek komutta 3 kontrol
+docker network connect supabase-supabase-0qdhd3 dokploy-traefik 2>/dev/null
+SB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://supabase-supabase-7d9184-178-230-66-156.traefik.me/rest/v1/)
+AUTH_CONF=$(docker exec supabase-supabase-0qdhd3-supabase-auth env 2>/dev/null | grep GOTRUE_MAILER_AUTOCONFIRM | cut -d= -f2)
+echo "Supabase API: $SB_STATUS (401=OK) | AutoConfirm: $AUTH_CONF (true=OK)"
 ```

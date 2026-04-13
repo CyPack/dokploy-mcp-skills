@@ -14,7 +14,7 @@ services:
       # Security - CHANGE THESE IN PRODUCTION!
       - APP_KEY=CHANGE_THIS_SECRET_KEY
       - ENCRYPTION_FIELD_KEY=CHANGE_THIS_ENCRYPTION_KEY
-
+      
       # Database
       - DB_DIALECT=postgres
       - DB_HOST=postgres
@@ -22,10 +22,10 @@ services:
       - DB_DATABASE=nocobase
       - DB_USER=nocobase
       - DB_PASSWORD=CHANGE_ME_SECURE_PASSWORD
-
+      
       # Timezone
       - TZ=Europe/Amsterdam
-
+      
       # Production mode
       - APP_ENV=production
     volumes:

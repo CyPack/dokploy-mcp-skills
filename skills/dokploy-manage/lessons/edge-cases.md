@@ -290,3 +290,233 @@ browser_network_requests → şunlara bak:
 - Port 3000 kullanıyor → başka uygulamalar için farklı port seç
 - Docker Swarm modunda çalışır
 - REST API: `http://localhost:3000/api/` (x-api-key header)
+
+### Atomic CRM (Vite + Supabase)
+- Port 3015 → nginx:alpine SPA server
+- Image: `localhost:5000/atomic-crm:latest` (local registry)
+- Supabase paylaşımlı instance (aynı DB, ayrı tablolar)
+- 22 migration, 31 tablo, 6 edge function (henüz deploy edilmedi)
+- Detay: `deployments/atomic-crm/golden-path.md`
+
+---
+
+## 🏗️ Vite/React SPA Deploy Tuzakları (2026-04-13)
+
+### Tuzak 1: VITE_* Env Var'ları Runtime'da Çalışmaz
+
+Vite `import.meta.env.VITE_*` değerlerini **build time'da** JavaScript bundle'ına string olarak bake eder.
+Container'a runtime `ENV` veya `docker run -e` ile verilen `VITE_*` değişkenleri **YOKSAYILIR**.
+
+```
+# YANLIŞ — container'da VITE_* env var çalışmaz:
+services:
+  frontend:
+    image: my-vite-app
+    environment:
+      VITE_API_URL: "http://api.example.com"   # ← BU HİÇBİR ETKİ YAPMAZ
+
+# DOĞRU — Build time'da ARG → ENV → RUN npm run build:
+docker build --build-arg VITE_API_URL="http://api.example.com" ...
+```
+
+**Dockerfile pattern:**
+```dockerfile
+ARG VITE_API_URL
+ENV VITE_API_URL=$VITE_API_URL
+RUN npm run build   # Vite burada ENV'den okur ve bundle'a bake eder
+```
+
+### Tuzak 2: nginx SPA Routing Eksik → 404
+
+Vite SPA'lar client-side routing kullanır (`/contacts`, `/deals` vb.). nginx default config sadece fiziksel dosyalara servis eder.
+`/contacts` path'ine direkt gidilirse → nginx 404 döner (çünkü `/contacts` dosyası yok).
+
+```nginx
+# ZORUNLU — SPA catch-all routing:
+location / {
+    try_files $uri $uri/ /index.html;
+}
+```
+
+**Dockerfile'da yazarken `$uri` tuzağı:**
+- Shell `$uri`'yi expand etmeye çalışır → boş string olur
+- Single quote kullan: `printf '... $uri ...'` → `$uri` literal olarak yazılır
+- Double quote ile: `printf "... \$uri ..."` → escape gerekir, hata riski yüksek
+
+### Tuzak 3: Supabase `sb_publishable_*` vs JWT ANON_KEY
+
+| Format | Ortam | Örnek |
+|--------|-------|-------|
+| `sb_publishable_ACJWlzQ...` | Supabase CLI (`supabase start`) / Supabase Cloud | Dev .env dosyasında bulunur |
+| `eyJhbGciOiJIUzI1NiIs...` (JWT) | Self-hosted Supabase (Docker) | Compose env `ANON_KEY` |
+
+Atomic CRM `.env.development`'ta `sb_publishable_*` format kullanıyor. Self-hosted deploy'da **JWT ANON_KEY** kullanılmalı.
+`createClient(url, key)` her iki formatı da kabul eder — format uyumsuzluğu sessiz hata verir (auth çalışmaz ama crash yok).
+
+### Tuzak 4: Supabase Migration "already exists" Trigger Hatası
+
+Supabase'in kendi auth setup'ı bazı function ve trigger'ları otomatik oluşturur:
+- `public.handle_new_user()` — yeni kullanıcı kaydında çağrılır
+- `on_auth_user_created` trigger — auth.users tablosuna INSERT sonrası
+
+Atomic CRM bu fonksiyonları **farklı implementasyonla** override etmek istiyor (sales tablosu entegrasyonu).
+`CREATE FUNCTION` hata verir → `CREATE OR REPLACE FUNCTION` kullanılmalı.
+
+```sql
+-- Güvenli migration pattern:
+CREATE OR REPLACE FUNCTION public.handle_new_user() ...
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created ...
+CREATE UNIQUE INDEX IF NOT EXISTS "uq__sales__user_id" ON public.sales (user_id);
+CREATE OR REPLACE VIEW init_state ...
+```
+
+### Tuzak 5: Supabase DB Port 5432 Host'a Expose Değil
+
+Çoklu PostgreSQL container'lar (OwnPilot, Dokploy, WhatsApp Stack, Supabase) aynı internal port 5432 kullanır.
+Supabase supavisor port mapping `${POSTGRES_PORT}:5432` sessizce fail eder (host port zaten meşgul).
+
+```bash
+# YANLIŞ — host port erişilemez:
+psql -h localhost -p 5432 -U postgres   # ← hangisine bağlanacak? → muhtemelen hiçbiri
+
+# DOĞRU — docker exec ile doğrudan container'a bağlan:
+docker exec -i supabase-supabase-0qdhd3-supabase-db psql -U postgres -d postgres
+
+# ALTERNATİF — pooler port 6543 erişilebilir:
+psql -h localhost -p 6543 -U postgres   # ← supavisor pooler
+```
+
+### Tuzak 6: `run_in_background: true` + Shell `&` = Process Kaybı
+
+Bash tool'un `run_in_background: true` parametresi ile komut içinde `&` (background operator) birlikte kullanılamaz.
+Shell `&` ile arka plana atılan subprocess, Bash tool background task bittiğinde **orphan olur ve kill edilir**.
+
+```bash
+# YANLIŞ — image build TAMAMLANMAZ:
+docker build -t img:latest . &    # shell background — task bitince kill
+echo "Build started"              # bu çalışır, build çalışmaz
+
+# DOĞRU — run_in_background parametresini kullan:
+# Bash tool: run_in_background=true
+docker build -t img:latest .      # komut kendisi foreground, tool arka planda izler
+```
+
+### Tuzak 7: Dokploy REST API Path Değişkenliği
+
+Önceki kayıtlar `/api/trpc/compose.update` zorunlu diyordu. 2026-04-13 (Dokploy v0.28.3) test:
+
+| Path | Sonuç | Body Format |
+|------|-------|-------------|
+| `POST /api/compose.update` | ÇALIŞIYOR | Doğrudan JSON `{"composeId":"...", ...}` |
+| `POST /api/trpc/compose.update` | ÇALIŞIYOR | tRPC wrapper `{"json": {"composeId":"...", ...}}` |
+
+Her iki path de `x-api-key` header gerektirir. `/api/compose.update` (tRPC prefix'siz) daha basit — tercih et.
+
+### Tuzak 8: traefik.me Domain `/etc/hosts` IP Uyumsuzluğu (2026-04-13)
+
+`traefik.me` DNS servisi bazen yanlış sonuç döner veya lokal resolver override eder.
+`supabase-supabase-7d9184-178-230-66-156.traefik.me` → beklenen IP `178.230.66.156` ama dönen: `127.0.0.1`.
+
+Sorun zinciri:
+```
+1. /etc/hosts'da: 127.0.0.1 supabase-supabase-*.traefik.me
+2. Traefik container: 192.168.2.13:80 → 80/tcp (0.0.0.0 DEĞİL!)
+3. Browser → DNS → 127.0.0.1:80 → hiçbir şey dinlemiyor → ERR_CONNECTION_REFUSED
+```
+
+**Diagnosis:**
+```bash
+# 1. DNS çözümleme kontrol
+dig +short supabase-supabase-*.traefik.me    # 127.0.0.1 ise → sorun
+# 2. Traefik bind IP kontrol
+docker ps | grep traefik                       # 192.168.2.13:80 → 0.0.0.0 DEĞİL
+# 3. /etc/hosts kontrol
+grep supabase /etc/hosts                       # 127.0.0.1 ise → DÜZELT
+```
+
+**Fix:** `/etc/hosts` IP'sini Traefik'in bind IP'sine değiştir:
+```bash
+sudo sed -i 's/127.0.0.1 supabase-supabase-7d9184.../192.168.2.13 supabase-supabase-7d9184.../' /etc/hosts
+```
+
+### Tuzak 9: Traefik → Compose Service Arası Network İzolasyonu (2026-04-13)
+
+Traefik label'ları doğru olsa bile, Traefik container'ı ile hedef container FARKLI Docker network'lerde ise → **504 Gateway Timeout**.
+
+```
+Traefik networks: bridge, dokploy-network (overlay)
+Supabase Kong network: supabase-supabase-0qdhd3 (bridge, local)
+→ Traefik Kong'u GÖREMEZ → 504
+```
+
+**Diagnosis:**
+```bash
+# Traefik network'leri
+docker inspect dokploy-traefik --format '{{json .NetworkSettings.Networks}}' | python3 -c "import json,sys; [print(k) for k in json.load(sys.stdin)]"
+# → bridge, dokploy-network
+
+# Hedef service network'ü
+docker inspect supabase-...-kong --format '{{json .NetworkSettings.Networks}}' | python3 -c "import json,sys; [print(k) for k in json.load(sys.stdin)]"
+# → supabase-supabase-0qdhd3
+```
+
+**Fix:**
+```bash
+docker network connect supabase-supabase-0qdhd3 dokploy-traefik
+```
+
+**DİKKAT:** Supabase `compose-deploy` veya `compose-redeploy` sonrası bu bağlantı **KOPABİLİR** (network yeniden oluşturulur). Her redeploy'dan sonra kontrol et:
+```bash
+docker network connect supabase-supabase-0qdhd3 dokploy-traefik 2>/dev/null
+curl -s -o /dev/null -w "%{http_code}" http://supabase-supabase-*.traefik.me/rest/v1/  # 401 = OK
+```
+
+### Tuzak 10: Supabase Self-Hosted Mail Container Yok → Signup 500 (2026-04-13)
+
+Supabase Docker template'i `SMTP_HOST=supabase-mail` (InBucket) ile gelir ama Dokploy template'inde mail container **deploy edilmemiş**.
+`ENABLE_EMAIL_AUTOCONFIRM=false` (default) + mail yok = signup 500 "Error sending confirmation email".
+
+**Diagnosis:**
+```bash
+docker ps | grep -i "mail\|inbucket"   # → boş = mail container YOK
+docker exec supabase-...-auth env | grep AUTOCONFIRM
+# GOTRUE_MAILER_AUTOCONFIRM=false → SORUN
+```
+
+**Fix (3 adım — compose env güncellemesi TEK BAŞINA yetmez):**
+```bash
+# 1. Dokploy compose env'de güncelle (REST API)
+# ENABLE_EMAIL_AUTOCONFIRM=true
+
+# 2. Auth container'ı yeniden oluştur (compose-deploy YETMEZ!)
+docker stop supabase-...-auth
+docker rm supabase-...-auth
+
+# 3. Env override ile yeniden başlat
+cd /etc/dokploy/compose/supabase-.../code
+ENABLE_EMAIL_AUTOCONFIRM=true docker compose up -d --no-deps auth
+
+# 4. Doğrula
+docker exec supabase-...-auth env | grep AUTOCONFIRM
+# GOTRUE_MAILER_AUTOCONFIRM=true → OK
+```
+
+**Neden compose-deploy yetmez?** Bilinen Dokploy env propagation bug'ı: REST API ile env güncellenip compose-deploy yapılsa bile container eski env ile oluşturulabiliyor. Elle `docker stop/rm` + `docker compose up` en güvenilir yol.
+
+### Tuzak 11: Supabase Compose Redeploy Sonrası Checklist (2026-04-13)
+
+Supabase compose her redeploy'dan sonra şu kontroller ZORUNLU:
+
+```bash
+# 1. Traefik network bağlantısı (kopmuş olabilir)
+docker network connect supabase-supabase-0qdhd3 dokploy-traefik 2>/dev/null
+
+# 2. Auth autoconfirm hâlâ aktif mi?
+docker exec supabase-...-auth env | grep GOTRUE_MAILER_AUTOCONFIRM
+# false ise → Tuzak 10'daki fix'i tekrarla
+
+# 3. API erişilebilir mi?
+curl -s -o /dev/null -w "%{http_code}" http://supabase-supabase-*.traefik.me/rest/v1/
+# 401 = OK (auth gerekiyor), 504 = network kopuk, 000 = DNS/hosts sorunu
+```
