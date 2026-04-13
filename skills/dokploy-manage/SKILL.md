@@ -1,28 +1,47 @@
 ---
+maturity: sonnet
+maturity_score: 8
+lesson_count: 40
 name: dokploy-manage
 description: |
-  Dokploy self-hosted PaaS platform yonetimi (MCP API).
-  Browser automation KULLANMAZ - Direkt DokployServer MCP API ile calisir.
+  Dokploy self-hosted PaaS platform yonetimi (MCP API + Playwright troubleshooting).
+  Deploy icin DokployServer MCP API kullanir.
+  UI sorunlarinda Playwright ile browser katmanini test eder.
 
   PLATFORM: Dokploy (30.2k GitHub stars) - Docker + Traefik mimarisi
+  URL: http://localhost:3000
 
   KULLANIM DURUMLARI:
   - Uygulama deploy et, redeploy, rollback
-  - Compose service olustur ve deploy et
+  - Compose service olustur ve deploy et (GOLDEN PATH: REST API ile composeFile set et)
   - Docker container yonetimi (restart, logs, status)
   - Backup zamanlama ve manuel tetikleme
   - Domain / SSL yonetimi
   - Proje ve environment yonetimi
   - Registry (Docker Hub, GHCR, private) yonetimi
-  - Server yonetimi (multi-node)
   - Deployment gecmisi ve izleme
+  - UI sorun giderme (Playwright ile browser katmani test)
 
   TRIGGERS: dokploy, deploy, redeploy, rollback, compose deploy,
-  backup, domain, ssl, traefik, container restart, deployment
+  backup, domain, ssl, traefik, container restart, deployment,
+  waha, whatsapp api, connection failed, not connected
 
-  CONTEXT: Kullanici Dokploy platformu ile ilgili islem istiyor
+  KRITIK KURALLAR:
+  1. compose-update MCP ile composeFile GUNCELLENMIYOR → REST API kullan
+  2. application-saveEnvironment env var Docker Swarm'a GECMIYOR → compose YAML kullan
+  3. Kullanici UI hatasi bildirdi + server curl OK → HEMEN Playwright ac
+  4. compose-create icin appName + projectId ZORUNLU
+  5. project-delete MCP'de YOK → REST API curl kullan
+  6. compose-import HICBIR ZAMAN CALISMAZ (YAML:"not valid JSON", JSON:"Cannot read properties undefined") → KULLANMA
+  7. REST API PATH: /api/trpc/compose.update  (NOT /api/compose.update)
+  8. REST API AUTH: x-api-key: KEY header    (NOT Authorization: Bearer — CALISMAZ)
+  9. REST API BODY: {"json": {...}} tRPC wrapper ZORUNLU
+  10. DEPLOY SONRASI: verify-deploy.sh MUTLAKA calistir (kanitsiz "tamamlandi" DEME)
+  11. MONITORING: monitor-all.sh cron aktif — her 5dk Dokploy servislerini izler, WA bildirim gonderir
 
-  KRiTiK: Bu skill MCP API kullanir. Playwright plugin KULLANMA!
+  PLAYWRIGHT OTO-TETIK:
+  Kullanici hata bildirdi + sunucu tarafinda sorun yok → Playwright ile UI kontrol zorunlu!
+  "Calisıyor gibi gorunuyor" DEME, git bak.
 user-invocable: true
 allowed-tools: mcp__DokployServer__*
 auto-load-context:
@@ -67,6 +86,8 @@ Proje olusturma, uygulama deploy, compose yonetimi, backup, domain ve daha fazla
 |  | Traefik  |  | Docker  |  | Swarm  |  | Postgres |   |
 |  | (Proxy)  |  | Engine  |  | Mode   |  | (State)  |   |
 |  +----------+  +---------+  +--------+  +----------+   |
+|                                                         |
+|  URL: http://localhost:3000                              |
 +---------------------------------------------------------+
 ```
 
@@ -80,6 +101,9 @@ Aktiflestirmek icin `args`'a `"--enable-tools", "compose/"` ekle:
 "args": ["-y", "dokploy-mcp", "--enable-tools", "compose/"]
 ```
 Config degisikligi sonrasi Claude Code session restart gerekir (deferred tools cache).
+
+**Dokploy Versiyonu:** v0.28.3 (4 Mart 2026) - Docker Swarm modunda calisir (autolock KAPALI).
+**Disaster Recovery:** `references/disaster-recovery.md` — tum credential'lar ve recovery komutlari.
 
 ## Kavram Hiyerarsisi
 
@@ -102,7 +126,7 @@ Her kaynak kendi ID'si ile yonetilir (projectId, environmentId, applicationId, c
 
 ## Tool Kategorileri (11 Kategori, 98 Tool)
 
-### 1. Project (4 tool) - SAFE
+### 1. Project (4 tool + 1 REST fallback) - SAFE
 
 | Tool | Risk | Aciklama |
 |------|------|----------|
@@ -110,6 +134,17 @@ Her kaynak kendi ID'si ile yonetilir (projectId, environmentId, applicationId, c
 | `project-one` | READ | Proje detayi (environments dahil) |
 | `project-create` | LOW | Yeni proje olustur |
 | `project-update` | LOW | Proje adini/aciklamasini guncelle |
+| ~~`project-delete`~~ | **REST API** | MCP'de YOK → REST fallback kullan (asagiya bak) |
+
+> **project-remove REST fallback** (MCP'de bu tool yoktur, her zaman curl kullan):
+> ```bash
+> DOKPLOY_KEY=$(cat ~/.claude.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['mcpServers']['DokployServer']['env']['DOKPLOY_API_KEY'])")
+> curl -s -X POST "http://localhost:3000/api/project.remove" \
+>   -H "x-api-key: $DOKPLOY_KEY" \
+>   -H "Content-Type: application/json" \
+>   -d '{"projectId":"PROJECT_ID_BURAYA"}'
+> ```
+> Onay: projectId + deleteVolumes tercihi AskUserQuestion ile MUTLAKA sorulacak.
 
 ### 2. Environment (3 tool) - SAFE
 
@@ -151,6 +186,7 @@ Her kaynak kendi ID'si ile yonetilir (projectId, environmentId, applicationId, c
 ### 4. Compose (25 tool) - DIKKATLI
 
 > **NOT:** Compose tool'lar varsayilan olarak disabled'dir. `--enable-tools compose/` ile aktif edilir.
+> Aktif degilse REST API fallback: `curl -X GET/POST http://localhost:3000/api/compose.*`
 
 | Tool | Risk | Aciklama |
 |------|------|----------|
@@ -336,6 +372,21 @@ User: "projeleri goster", "ne var ne yok"
 → Sonuc: proje listesi (ad, environmentId, application/compose sayisi)
 ```
 
+### Proje Silme (CRITICAL - REST API)
+```
+User: "voicebox projesini sil", "projeyi kaldır"
+→ 1. project-all() → projectId bul
+→ 2. AskUserQuestion: "İçindeki tüm compose/app'ler de silinsin mi? Volume'ler?"
+→ 3. İçindeki compose'ları önce compose-delete() ile sil (deleteVolumes seçime göre)
+→ 4. REST API ile projeyi sil:
+     DOKPLOY_KEY=$(cat ~/.claude.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['mcpServers']['DokployServer']['env']['DOKPLOY_API_KEY'])")
+     curl -s -X POST "http://localhost:3000/api/project.remove" \
+       -H "x-api-key: $DOKPLOY_KEY" \
+       -H "Content-Type: application/json" \
+       -d '{"projectId":"PROJECT_ID"}'
+→ NOT: MCP'de project-delete tool'u YOKTUR. Her zaman REST API kullan.
+```
+
 ### Yeni Proje Olusturma
 ```
 User: "yeni proje olustur: my-app"
@@ -353,6 +404,16 @@ User: "nginx deploy et"
 → 5. application-deploy(applicationId)
 ```
 
+### Application Deploy (GitHub Repo)
+```
+User: "github.com/user/repo deploy et"
+→ 1. Proje/environment hazirla (yukaridaki gibi)
+→ 2. application-create(name, environmentId)
+→ 3. application-saveGithubProvider(applicationId, owner, repository, branch)
+→ 4. application-saveBuildType(applicationId, buildType="nixpacks"|"dockerfile")
+→ 5. application-deploy(applicationId)
+```
+
 ### Compose Deploy (YAML)
 ```
 User: "bu compose'u deploy et: [YAML]"
@@ -360,6 +421,14 @@ User: "bu compose'u deploy et: [YAML]"
 → 2. compose-create(name, appName, projectId, environmentId)
 → 3. compose-import(composeId, base64=encode(YAML))
 → 4. compose-deploy(composeId)
+```
+
+### Template Deploy
+```
+User: "template'lerden birini deploy et"
+→ 1. compose-templates() → template listesi goster
+→ 2. Kullanici secer
+→ 3. compose-deployTemplate(environmentId, id=templateId)
 ```
 
 ### Redeploy
@@ -373,14 +442,45 @@ User: "nocobase'i tekrar deploy et"
 ```
 User: "nocobase'i durdur"
 → compose-stop(composeId) veya application-stop(applicationId)
+
+User: "nocobase'i baslat"
+→ compose-start(composeId) veya application-start(applicationId)
 ```
 
 ### Domain Ekleme
 ```
 User: "nocobase.example.com domain ekle"
 → 1. ID cozumle
-→ 2. domain-create(host, https=true, certificateType="letsencrypt")
+→ 2. domain-create(applicationId/composeId ile iliskili parametreler)
 → Let's Encrypt otomatik SSL saglar
+```
+
+### Deployment Gecmisi
+```
+User: "son deployment'lar ne durumda"
+→ deployment-all() veya deployment-allByCompose(composeId)
+→ Sonuc: tarih, status (done/error/running), sure
+```
+
+### Backup Zamanlama
+```
+User: "nocobase db'si icin gunluk backup ayarla"
+→ 1. backup-create(
+      name="nocobase-daily",
+      schedule="0 2 * * *",
+      prefix="nocobase-db-",
+      destinationId=...,
+      database="nocobase",
+      databaseType="postgres",
+      composeId=...
+   )
+```
+
+### Manuel Backup
+```
+User: "nocobase'in backup'ini hemen al"
+→ 1. Backup config ID'yi bul
+→ 2. backup-manualBackupPostgres(backupId) veya ilgili DB tipi
 ```
 
 ### Container Yonetimi
@@ -388,9 +488,37 @@ User: "nocobase.example.com domain ekle"
 User: "container'lari goster"
 → 1. server-all() → serverId
 → 2. docker-getContainers(serverId)
+
+User: "nocobase container'ini restart et"
+→ docker-restartContainer(serverId, containerId)
+```
+
+### Monitoring
+```
+User: "nocobase'in kaynak kullanimi"
+→ application-readAppMonitoring(appName)
+```
+
+### Traefik Config
+```
+User: "traefik yapilandirmasini goster"
+→ application-readTraefikConfig(applicationId)
 ```
 
 ---
+
+## Build Types
+
+| Build Type | Aciklama | Kaynak |
+|-----------|----------|--------|
+| `dockerfile` | Repo'daki Dockerfile | Git repo |
+| `nixpacks` | Otomatik algilama (Node, Python, Go, vb.) | Git repo |
+| `heroku_buildpacks` | Heroku buildpack uyumlu | Git repo |
+| `paketo_buildpacks` | Cloud Native Buildpacks | Git repo |
+| `static` | Statik site (HTML/CSS/JS) | Git repo |
+| `railpack` | Rails uyumlu | Git repo |
+
+**Onerilen:** Cogu proje icin `nixpacks` en kolay secenektir - otomatik dil/framework algilama.
 
 ## Hata Durumlari
 
@@ -398,8 +526,11 @@ User: "container'lari goster"
 |------|--------|-------|
 | `401 Unauthorized` | API key gecersiz/eksik | Settings > API'den yeni key olustur |
 | `404 Not Found` | Yanlis ID veya silinmis kaynak | project-all ile ID'leri yeniden kontrol et |
+| `Application not found` | applicationId gecersiz | ID cozumleme protokolunu takip et |
+| `Compose not found` | composeId gecersiz | project-one ile environment icerigini kontrol et |
 | `Deploy failed` | Build hatasi, image bulunamadi | deployment-allByType ile log kontrol et |
 | `Port conflict` | Port zaten kullaniliyor | Compose YAML'da portu degistir |
+| `Volume permission denied` | Docker Swarm SELinux | Named volume kullan, bind mount degil |
 | `Connection refused` | Dokploy servisi calismiyior | `docker service ls` ile kontrol et |
 | `Base64 decode error` | compose-import hatali encoding | YAML → UTF-8 → base64 encode kontrol et |
 
@@ -416,20 +547,51 @@ User: "container'lari goster"
 3. **compose-import Base64:** Compose YAML'i `base64` encode etmen gerekir.
    Bash ile: `echo -n "YAML_CONTENT" | base64`
 
-4. **Swarm vs Standalone:** Dokploy Docker Swarm modunda calisir.
+4. **application-update 90+ Parametre:** Sadece degistirmek istedigin parametreleri gonder,
+   `applicationId` disindaki parametrelerin hepsi opsiyonel.
+
+5. **Swarm vs Standalone:** Dokploy Docker Swarm modunda calisir.
    Container restart icin `docker-restartContainer` kullan, direkt `docker restart` degil.
 
-5. **Environment Otomatik Olusturma:** Proje olusturuldiginda otomatik olarak
-   bir default environment olusur.
+6. **Environment Otomatik Olusturma:** Proje olusturuldiginda otomatik olarak
+   bir default environment olusur. Ekstra environment lazim degilse yenisini olusturmana gerek yok.
+
+7. **Server ID Zorunlulugu:** Docker ve bazi deployment tool'lari `serverId` ister.
+   `server-all()` ile once server ID'yi al.
+
+8. **MCP Environment Variables Bug (KRITIK):** `application-saveEnvironment` ve `compose-update`
+   calisiyor gorunuyor AMA container'a env var'lar iletilmiyor. Container inspect'de gorunmez.
+   **COZUM:** Database gerektiren uygulamalarda (PostgreSQL, MySQL) veya ozel env gerektiren
+   uygulamalarda DIREK Manuel docker-compose ile deploy et. MCP workflow guvenilmez.
+
+9. **Compose File Update Bug:** `compose-update` composeFile alanini guncellemiyor.
+   **COZUM:** Compose silip yeniden olustur VEYA REST API: `curl -X PATCH http://localhost:3000/api/compose/{composeId}`
+
+10. **Evolution API / Database Gerektiren Uygulamalar:** DATABASE_PROVIDER zorunlu.
+    Gecerli degerler: `postgresql`, `mysql`, `psql_bouncer`. `sqlite` veya `false` CALISMAZ.
+    DATABASE_ENABLED=false bile calismiyor. PostgreSQL ile birlikte deploy et.
 
 ---
 
 **Referans Dosyalari:**
 - `references/tool-reference.md` → 98 tool'un detayli parametre tablolari
 - `references/workflow-examples.md` → Adim adim senaryo ornekleri
-- `references/setup-guide.md` → Dokploy + MCP kurulum detaylari
 
 **Skill Metadata:**
-- Version: 1.1.0
+- Created: 2026-02-12
+- Updated: 2026-02-22
+- Version: 1.2.0
+- Author: Ayaz + Claude Sonnet 4.6
 - MCP Server: DokployServer (dokploy-mcp v1.0.7, tacticlaunch)
+- Dokploy Platform: v0.27.0
 - Tool Count: 98 aktif (55 default + 25 compose via --enable-tools + 18 diger)
+
+**v1.2.0 Degisiklikleri:**
+- Playwright oto-tetik kurali eklendi (UI hata = browser katmani test)
+- WAHA deploy golden path eklendi (port 3002, NOWEB, 3 auth katmani)
+- WAHA dashboard "Server connection failed" fix dokumanlandi
+- Browser localStorage pattern eklendi (edge cases)
+- Multi-katmanlı auth mimarisi aciklandi
+- errors.md tamamen yeniden yazildi (deploy karar agaci, MCP guvenilmez alanlar)
+- golden-paths.md genisletildi (9 senaryo, adim adim talimatlar)
+- SKILL.md KRITIK KURALLAR bolumu eklendi

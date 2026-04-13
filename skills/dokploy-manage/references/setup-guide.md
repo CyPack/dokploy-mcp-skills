@@ -7,7 +7,9 @@ Dokploy platform kurulumu, MCP entegrasyonu, troubleshooting ve mimari notlar.
 ## 1. Dokploy Platform Kurulumu
 
 ### Ortam
+- **Sunucu:** Razer Blade 14 (2021), Fedora Linux
 - **Mod:** Docker Swarm (single node)
+- **Versiyon:** v0.27.0 (10 Subat 2026'da guncellendi, onceki: v0.26.6)
 - **URL:** http://localhost:3000
 - **Swagger:** http://localhost:3000/swagger
 
@@ -36,8 +38,9 @@ docker service update --image dokploy/dokploy:vX.Y.Z dokploy
 
 | Paket | Repo | Stars | Versiyon | Kapsam |
 |-------|------|-------|----------|--------|
-| `dokploy-mcp` (ONERILEN) | tacticlaunch/dokploy-mcp | 3 | 1.0.7 | 380 tool (en kapsamli) |
+| `dokploy-mcp` (YUKLU) | tacticlaunch/dokploy-mcp | 3 | 1.0.7 | 380 tool (en kapsamli) |
 | `@ahdev/dokploy-mcp` (RESMI) | Dokploy/mcp | 108 | 1.6.0 | Sinirli (compose YOK) |
+| `@ahdev/dokploy-mcp` (fork) | andradehenrique/dokploy-mcp | 16 | - | Sinirli (compose YOK) |
 
 **Karar:** `tacticlaunch/dokploy-mcp` — OpenAPI spec'ten otomatik uretilmis, 380 tool, en kapsamli.
 
@@ -74,6 +77,11 @@ dokploy-mcp "smart defaults" stratejisi kullanir:
 "args": ["-y", "dokploy-mcp", "--enable-tools", "compose/"]
 ```
 
+**Alternatif (spesifik tool'lar):**
+```
+--enable-tools compose-stop,compose-start,compose-deploy,compose-redeploy,compose-one,compose-update,compose-loadServices,compose-delete,compose-import,compose-templates,compose-deployTemplate
+```
+
 **`--enable-tools` Mekanizmasi (teknik detay):**
 - `@tacticlaunch/xmcp` framework, `node:util/parseArgs` ile CLI args parse eder
 - `xa()` fonksiyonu tool filtering yapar
@@ -92,7 +100,7 @@ dokploy-mcp "smart defaults" stratejisi kullanir:
 - Endpoint format: `POST /api/compose.stop`
 - 383 endpoint, 37 router/tag
 
-### Compose API Endpoint'leri
+### Compose API Endpoint'leri (Dogrulanmis)
 ```
 POST /api/compose.stop     → composeId (body)
 POST /api/compose.start    → composeId (body)
@@ -108,7 +116,7 @@ GET  /api/compose.templates
 
 ### REST API Hafif Kontrol Ornekleri
 ```bash
-# Sadece status
+# Sadece status (credential'i env'den al)
 curl -s "http://localhost:3000/api/compose.one?composeId=ID" \
   -H "x-api-key: $DOKPLOY_API_KEY" | jq '{name, composeStatus}'
 
@@ -126,6 +134,13 @@ curl -s "http://localhost:3000/api/project.all" \
 Claude Code uyarisi: "Large MCP response (~15.2k tokens)"
 Bu uyari **bilgilendirme amacli** — veri kaybi veya truncation YOK.
 
+### Root Cause
+`compose-one` tum detaylari tek seferde donuyor:
+- composeFile (380+ satir YAML) → ~3K token
+- env (tum environment variables) → ~2K token
+- mounts[] (12 dosya, SQL + YAML + TypeScript icerikleri) → ~8K token
+- deployments, domains, metadata → ~2K token
+
 ### Cozum: Duruma Gore Tool Secimi
 
 | Ihtiyac | Kullan | Token |
@@ -133,6 +148,13 @@ Bu uyari **bilgilendirme amacli** — veri kaybi veya truncation YOK.
 | Sadece status kontrolu | REST API: `compose.one` + jq `.composeStatus` | ~50 |
 | Servis listesi | `compose-loadServices` (MCP) | ~200 |
 | Tam detay (debug, analiz) | `compose-one` (MCP) — 15K uyarisi normal | ~15K |
+| Status guncelleme | REST API: `compose.update` + `composeStatus` | ~50 |
+
+### Pratik Kurallar
+1. **Rutin kontrol:** `compose-loadServices` veya REST API kullan
+2. **Derin analiz:** `compose-one` kullan, uyari normal
+3. **Birden fazla compose:** Paralel cagir, ama hepsini `compose-one` ile cagirma
+4. **Context tasarrufu:** Session basinda tum compose'lari `compose-one` ile cekme
 
 ---
 
@@ -141,10 +163,12 @@ Bu uyari **bilgilendirme amacli** — veri kaybi veya truncation YOK.
 ### Config Degisikligi Yansimadi
 - **Sebep:** Claude Code deferred tools listesi session basinda olusturuluyor
 - **Cozum:** Claude Code'u tamamen kapat-ac (session restart)
+- `claude mcp remove/add-json` config dosyasini degistirir ama calisan process'i yeniden baslatmaz
 
 ### Birden Fazla MCP Process
-- **Sebep:** Farkli terminal'lerde ayri process'ler
+- **Sebep:** Farkli terminal'lerde (pts/0, pts/2, pts/3) ayri process'ler
 - **Cozum:** Tum eski process'leri kill et, tek session'dan calis
+- Process kill sonrasi Claude Code yeni process baslatmaz (diger session process'lerine baglanir)
 
 ### compose-update composeStatus Desteklemiyor
 - **Sebep:** MCP tool'u bu alani schema'da tanimiyor
@@ -154,6 +178,16 @@ curl -s -X POST "http://localhost:3000/api/compose.update" \
   -H "x-api-key: $DOKPLOY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"composeId":"...", "composeStatus":"done"}'
+```
+
+### project.remove API
+- Dokploy MCP'de `project-remove` veya `project-delete` tool'u YOK
+- REST API fallback:
+```bash
+curl -s -X POST "http://localhost:3000/api/project.remove" \
+  -H "x-api-key: $DOKPLOY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"projectId":"..."}'
 ```
 
 ---
@@ -168,7 +202,7 @@ Claude Code Session
 │   └── Kullanim: Rutin operasyonlar, servis listesi
 │
 └── REST API (curl via Bash)
-    ├── Avantaj: Lightweight, jq ile filtreleme
+    ├── Avantaj: Lightweight, jq ile filtreleme, credential env'den
     ├── Dezavantaj: Manual URL/header yonetimi
     └── Kullanim: Status kontrol, bulk islem, MCP'de olmayan endpoint'ler
 ```
@@ -179,7 +213,14 @@ Claude Code Session
 
 ## 7. Kaynaklar
 
-- [tacticlaunch/dokploy-mcp](https://github.com/tacticlaunch/dokploy-mcp) - MCP paketi (v1.0.7)
+- [tacticlaunch/dokploy-mcp](https://github.com/tacticlaunch/dokploy-mcp) - Yuklu MCP paketi (v1.0.7)
 - [Dokploy/mcp](https://github.com/Dokploy/mcp) - Resmi MCP repo
 - [Dokploy API Docs](https://docs.dokploy.com/docs/api)
+- [Compose API Reference](https://docs.dokploy.com/docs/api/reference-compose)
 - [Dokploy Releases](https://github.com/Dokploy/dokploy/releases)
+- [PR #1: Compose tools](https://github.com/Dokploy/mcp/pull/1)
+- [Issue #18: Compose request](https://github.com/Dokploy/mcp/issues/18)
+
+---
+
+*Olusturulma: 2026-02-12 | Son guncelleme: 2026-02-12*

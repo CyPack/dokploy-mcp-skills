@@ -120,6 +120,9 @@ Parametre yok. Tum projeleri listeler.
 | dockerBuildStage | string/null | * | Multi-stage build stage |
 | dockerfile | string/null | | Dockerfile icerigi |
 | publishDirectory | string/null | | Publish dizini (static icin) |
+| herokuVersion | string/null | | Heroku versiyon |
+| railpackVersion | string/null | | Railpack versiyon |
+| isStaticSpa | boolean/null | | SPA mi? |
 
 ### application-saveDockerProvider
 | Parametre | Tip | Zorunlu | Aciklama |
@@ -139,6 +142,23 @@ Parametre yok. Tum projeleri listeler.
 | repository | string/null | | Repo adi |
 | branch | string/null | | Branch |
 | buildPath | string/null | | Build yolu |
+| triggerType | enum | | `push`, `tag` |
+| enableSubmodules | boolean | | Submodule aktif |
+| watchPaths | string[] | | Izlenecek yollar |
+
+### application-saveGitlabProvider
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| applicationId | string | * | App ID |
+| gitlabId | string/null | * | GitLab ID |
+| gitlabProjectId | number/null | * | GitLab proje ID |
+| gitlabOwner | string/null | * | Owner |
+| gitlabRepository | string/null | * | Repo |
+| gitlabBranch | string/null | * | Branch |
+| gitlabBuildPath | string/null | * | Build yolu |
+| gitlabPathNamespace | string/null | * | Namespace |
+| enableSubmodules | boolean | | Submodule |
+| watchPaths | string[] | | Watch paths |
 
 ### application-saveGitProvider (Generic Git)
 | Parametre | Tip | Zorunlu | Aciklama |
@@ -147,6 +167,32 @@ Parametre yok. Tum projeleri listeler.
 | gitUrl | string | * | Git repo URL (SSH/HTTPS) |
 | branch | string | * | Branch |
 | buildPath | string | | Build yolu |
+| username | string | | Git kullanici |
+| password | string | | Git sifre/token |
+
+### application-saveGiteaProvider
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| applicationId | string | * | App ID |
+| giteaId | string/null | * | Gitea ID |
+| giteaOwner | string/null | * | Owner |
+| giteaRepository | string/null | * | Repo |
+| giteaBranch | string/null | * | Branch |
+| giteaBuildPath | string/null | * | Build yolu |
+| enableSubmodules | boolean | | Submodule |
+| watchPaths | string[] | | Watch paths |
+
+### application-saveBitbucketProvider
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| applicationId | string | * | App ID |
+| bitbucketId | string/null | * | Bitbucket ID |
+| bitbucketOwner | string/null | * | Owner |
+| bitbucketRepository | string/null | * | Repo |
+| bitbucketBranch | string/null | * | Branch |
+| bitbucketBuildPath | string/null | * | Build yolu |
+| enableSubmodules | boolean | | Submodule |
+| watchPaths | string[] | | Watch paths |
 
 ### application-disconnectGitProvider
 | Parametre | Tip | Zorunlu | Aciklama |
@@ -187,6 +233,10 @@ Parametre yok. Tum projeleri listeler.
 | sourceType | enum | github, docker, git, gitlab, bitbucket, gitea, drop |
 | dockerImage | string/null | |
 | dockerfile | string/null | |
+| buildPath | string/null | |
+| dockerContextPath | string/null | |
+| dockerBuildStage | string/null | |
+| buildArgs | string/null | |
 
 **Kaynak limitleri:**
 | Parametre | Tip | Aciklama |
@@ -197,7 +247,19 @@ Parametre yok. Tum projeleri listeler.
 | memoryReservation | string/null | Garanti RAM |
 | replicas | number | Replika sayisi |
 
-> NOT: Sadece `applicationId` zorunlu. Diger parametreler opsiyonel —
+**Swarm ayarlari (ileri duzey):**
+healthCheckSwarm, labelsSwarm, modeSwarm, networkSwarm,
+placementSwarm, restartPolicySwarm, rollbackConfigSwarm,
+updateConfigSwarm, stopGracePeriodSwarm
+
+**Preview deployment ayarlari:**
+previewBuildArgs, previewEnv, previewPort, previewPath,
+previewHttps, previewLimit, previewWildcard,
+previewCertificateType (letsencrypt/none/custom),
+previewCustomCertResolver, previewLabels,
+previewRequireCollaboratorPermissions
+
+> NOT: Sadece `applicationId` zorunlu. Diger parametreler opsiyonel -
 > sadece degistirmek istedigini gonder.
 
 ---
@@ -218,6 +280,12 @@ Parametre yok. Tum projeleri listeler.
 | Parametre | Tip | Zorunlu | Aciklama |
 |-----------|-----|---------|----------|
 | composeId | string | * | Compose ID |
+
+### compose-update
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| composeId | string | * | Compose ID |
+| (+ compose config fields) | | | |
 
 ### compose-deploy / compose-redeploy / compose-start / compose-stop
 | Parametre | Tip | Zorunlu | Aciklama |
@@ -241,20 +309,45 @@ Parametre yok. Tum projeleri listeler.
 |-----------|-----|---------|----------|
 | environmentId | string | * | Hedef environment |
 | id | string | * | Template ID |
+| baseUrl | string | | Base URL |
+| serverId | string | | Hedef server |
 
 ### compose-templates
 Parametre yok. Mevcut template'leri listeler.
+
+### compose-processTemplate
+Template onizleme. Template ID ve parametreler.
+
+### compose-isolatedDeployment
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| composeId | string | * | Test deploy |
 
 ### compose-loadServices / compose-loadMountsByService
 | Parametre | Tip | Zorunlu | Aciklama |
 |-----------|-----|---------|----------|
 | composeId | string | * | Compose ID |
 
+### compose-fetchSourceType / compose-getConvertedCompose / compose-getDefaultCommand / compose-getTags
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| composeId | string | * | Compose ID |
+
+### compose-randomizeCompose
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| composeId | string | * | Port ve secret'lari randomize et |
+
 ### compose-move
 | Parametre | Tip | Zorunlu | Aciklama |
 |-----------|-----|---------|----------|
 | composeId | string | * | Tasinacak compose |
 | environmentId | string | * | Hedef environment |
+
+### compose-cancelDeployment / compose-cleanQueues / compose-refreshToken / compose-disconnectGitProvider
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| composeId | string | * | Compose ID |
 
 ---
 
@@ -306,6 +399,12 @@ Parametre yok. Tum deployment'lar.
 | serverId | string | * | Server ID |
 | appName | string | * | Eslesecek isim |
 
+### docker-getServiceContainersByAppName / docker-getStackContainersByAppName
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| serverId | string | * | Server ID |
+| appName | string | * | App adi |
+
 ### docker-getConfig
 | Parametre | Tip | Zorunlu | Aciklama |
 |-----------|-----|---------|----------|
@@ -331,12 +430,47 @@ Parametre yok. Tum deployment'lar.
 | destinationId | string | * | Hedef depolama |
 | database | string | * | DB adi |
 | databaseType | enum | * | `postgres`, `mysql`, `mariadb`, `mongo`, `web-server` |
+| applicationId | string/null | | App ID |
+| composeId | string/null | | Compose ID |
+| postgresId | string/null | | PG service ID |
+| mysqlId | string/null | | MySQL service ID |
+| mariadbId | string/null | | MariaDB service ID |
+| mongoId | string/null | | Mongo service ID |
+| serviceName | string/null | | Service adi |
+| enabled | boolean/null | | Aktif mi |
 | keepLatestCount | number/null | | Saklanacak backup sayisi |
+| metadata | any | | Ek metadata |
 
 ### backup-one
 | Parametre | Tip | Zorunlu | Aciklama |
 |-----------|-----|---------|----------|
 | backupId | string | * | Backup ID |
+
+### backup-update
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| backupId | string | * | Backup ID |
+| schedule | string | * | Cron |
+| prefix | string | * | Prefix |
+| destinationId | string | * | Hedef |
+| database | string | * | DB adi |
+| serviceName | string/null | * | Service |
+| databaseType | enum | * | DB tipi |
+| enabled | boolean/null | | Aktif mi |
+| keepLatestCount | number/null | | Saklama sayisi |
+| metadata | any | | Metadata |
+
+### backup-remove
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| backupId | string | * | Silinecek backup |
+
+### backup-listBackupFiles
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| destinationId | string | * | Depolama ID |
+| search | string | * | Arama terimi |
+| serverId | string | | Server ID |
 
 ### backup-manualBackup{Postgres,MySql,Mariadb,Mongo,Compose,WebServer}
 | Parametre | Tip | Zorunlu | Aciklama |
@@ -345,16 +479,108 @@ Parametre yok. Tum deployment'lar.
 
 ---
 
-## 8-11. Domain, Registry, User, Server
+## 8. Domain (4 tool)
 
-### domain-create / domain-update / domain-one / domain-all
-Domain CRUD. `domainId` ile yonetilir.
+### domain-all
+Parametre yok. Tum domain'ler.
 
-### registry-create / registry-update / registry-one / registry-all / registry-remove / registry-testRegistry
-Registry CRUD. `registryId` ile yonetilir. `registryType` = "cloud".
+### domain-create
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| (domain config) | | | Detay icin API docs |
 
-### user-all / user-get / user-one / user-update
-Kullanici yonetimi. `userId` ile.
+### domain-one
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| domainId | string | * | Domain ID |
 
-### server-all / server-one / server-create / server-update / server-getDefaultCommand
-Server yonetimi. `serverId` ile. Multi-node destegi.
+### domain-update
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| domainId | string | * | Guncelle |
+
+---
+
+## 9. Registry (6 tool)
+
+### registry-all
+Parametre yok.
+
+### registry-create
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| registryName | string | * | Registry adi |
+| username | string | * | Kullanici |
+| password | string | * | Sifre |
+| registryUrl | string (URI) | * | URL |
+| registryType | const "cloud" | * | Tip |
+| imagePrefix | string/null | * | Image on eki |
+| serverId | string | | Server |
+
+### registry-one
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| registryId | string | * | Registry ID |
+
+### registry-update
+Registry ID + guncellenecek alanlar.
+
+### registry-remove
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| registryId | string | * | Silinecek |
+
+### registry-testRegistry
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| registryId | string | * | Test edilecek |
+
+---
+
+## 10. User (4 tool)
+
+### user-all
+Parametre yok.
+
+### user-get
+Parametre yok. Mevcut kullaniciyi dondurur.
+
+### user-one
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| userId | string | * | Kullanici ID |
+
+### user-update
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| userId | string | * | Kullanici ID |
+| (+ user fields) | | | |
+
+---
+
+## 11. Server (5 tool)
+
+### server-all
+Parametre yok.
+
+### server-one
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| serverId | string | * | Server ID |
+
+### server-create
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| name | string | * | Server adi |
+| (+ server config) | | | IP, SSH key, vb. |
+
+### server-update
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| serverId | string | * | Server ID |
+| (+ fields) | | | |
+
+### server-getDefaultCommand
+| Parametre | Tip | Zorunlu | Aciklama |
+|-----------|-----|---------|----------|
+| serverId | string | * | Server ID |
